@@ -38,7 +38,7 @@ const Sensor = (() => {
   /* ── Tuning constants ── */
   const PEAK_THRESHOLD  = 2.5;   // m/s² dynamic (gravity removed)
   const LOW_THRESHOLD   = 0.8;   // m/s² — hysteresis floor
-  const MIN_STEP_MS     = 270;   // ms  — fastest real step
+  const MIN_STEP_MS     =200;   // ms  — fastest real step
   const MAX_STEP_MS     = 2200;  // ms  — slowest real step
   const SMOOTH_WINDOW   = 4;     // rolling average size
   const AXIS_WINDOW     = 20;    // samples for variance calc
