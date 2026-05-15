@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StepSync Sensor Debug</title>
+<style>
+  body { font-family: monospace; background: #111; color: #0f0; padding: 16px; font-size: 14px; }
+  h2 { color: #fff; margin-bottom: 4px; }
+  .box { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  .label { color: #aaa; font-size: 12px; }
+  .val { font-size: 22px; font-weight: bold; color: #0f0; }
+  .red { color: #f55; }
+  .yellow { color: #ff0; }
+  .green { color: #0f0; }
+  button { background: #0f0; color: #000; border: none; padding: 12px 24px; font-size: 16px; border-radius: 8px; margin: 4px; font-weight: bold; cursor: pointer; }
+  button.stop { background: #f55; color: #fff; }
+  #log { height: 180px; overflow-y: auto; font-size: 11px; color: #8f8; border: 1px solid #333; padding: 8px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h2>🔍 StepSync Sensor Debug</h2>
+<p style="color:#aaa;font-size:12px">Ye page sensor ka raw data dikhata hai. Chalo aur dekho kya aa raha hai.</p>
+
+<div class="box">
+  <div class="label">Sensor Status</div>
+  <div class="val" id="status">Not started</div>
+</div>
+
+<div class="box">
+  <div class="label">Raw Acceleration (with gravity) m/s²</div>
+  <div>X: <span class="val" id="rx">-</span>  Y: <span class="val" id="ry">-</span>  Z: <span class="val" id="rz">-</span></div>
+</div>
+
+<div class="box">
+  <div class="label">Pure Acceleration (no gravity) m/s²</div>
+  <div>X: <span class="val" id="px">-</span>  Y: <span class="val" id="py">-</span>  Z: <span class="val" id="pz">-</span></div>
+  <div class="label" style="margin-top:4px">Agar sab 0.00 hai → browser gravity nahi hata raha (fallback use hoga)</div>
+</div>
+
+<div class="box">
+  <div class="label">Dynamic Signal (gravity removed by app)</div>
+  <div>dX: <span class="val" id="dx">-</span>  dY: <span class="val" id="dy">-</span>  dZ: <span class="val" id="dz">-</span></div>
+  <div class="label" style="margin-top:4px">Dominant Axis: <span id="axis" style="color:#ff0;font-weight:bold">-</span></div>
+</div>
+
+<div class="box">
+  <div class="label">Step Detection</div>
+  <div>Smoothed Mag: <span class="val" id="smag">-</span> m/s²</div>
+  <div>PEAK_THRESHOLD: <span style="color:#ff0">2.5</span> &nbsp; LOW_THRESHOLD: <span style="color:#ff0">0.8</span></div>
+  <div>Peak Armed: <span class="val" id="peaked">NO</span></div>
+  <div style="margin-top:8px">Steps counted: <span class="val" id="steps" style="font-size:32px;color:#0ff">0</span></div>
+</div>
+
+<div class="box">
+  <div class="label">Event Rate</div>
+  <div>Events/sec: <span class="val" id="rate">-</span></div>
+</div>
+
+<button onclick="startSensor()">▶ Start</button>
+<button class="stop" onclick="stopSensor()">⏹ Stop</button>
+
+<div class="box" style="margin-top:12px">
+  <div class="label">Log</div>
+  <div id="log"></div>
+</div>
+
+<script>
+const PEAK_THRESHOLD = 2.5;
+const LOW_THRESHOLD  = 0.8;
+const MIN_STEP_MS    = 270;
+const MAX_STEP_MS    = 2200;
+const SMOOTH_WINDOW  = 4;
+const AXIS_WINDOW    = 20;
+const GRAVITY_ALPHA  = 0.8;
+
+let gravX = 0, gravY = 0, gravZ = 9.8;
+let axX = [], axY = [], axZ = [];
+let smoothBuf = [];
+let peakArmed = false;
+let lastStepTime = 0;
+let stepCount = 0;
+let eventCount = 0;
+let lastRateCheck = Date.now();
+let running = false;
+
+function log(msg) {
+  const el = document.getElementById('log');
+  const t = new Date().toLocaleTimeString('en', {hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  el.innerHTML = `<div>[${t}] ${msg}</div>` + el.innerHTML;
+}
+
+function variance(arr) {
+  if (arr.length < 2) return 0;
+  const m = arr.reduce((a,b) => a+b, 0) / arr.length;
+  return arr.reduce((s,v) => s + (v-m)**2, 0) / arr.length;
+}
+
+function handleMotion(evt) {
+  if (!running) return;
+  eventCount++;
+
+  // Rate counter
+  const now = Date.now();
+  if (now - lastRateCheck >= 1000) {
+    document.getElementById('rate').textContent = eventCount;
+    eventCount = 0;
+    lastRateCheck = now;
+  }
+
+  // Raw values
+  const raw = evt.accelerationIncludingGravity;
+  const pure = evt.acceleration;
+
+  if (raw) {
+    document.getElementById('rx').textContent = (raw.x||0).toFixed(2);
+    document.getElementById('ry').textContent = (raw.y||0).toFixed(2);
+    document.getElementById('rz').textContent = (raw.z||0).toFixed(2);
+  }
+
+  let ax, ay, az, gravRemoved;
+  if (pure && pure.x !== null && Math.abs(pure.x)+Math.abs(pure.y)+Math.abs(pure.z) > 0.01) {
+    ax = pure.x; ay = pure.y; az = pure.z; gravRemoved = true;
+    document.getElementById('px').textContent = ax.toFixed(2);
+    document.getElementById('py').textContent = ay.toFixed(2);
+    document.getElementById('pz').textContent = az.toFixed(2);
+  } else {
+    if (!raw || raw.x === null) return;
+    ax = raw.x; ay = raw.y; az = raw.z; gravRemoved = false;
+    document.getElementById('px').textContent = '0.00 (N/A)';
+    document.getElementById('py').textContent = '0.00';
+    document.getElementById('pz').textContent = '0.00';
+  }
+
+  let dx, dy, dz;
+  if (gravRemoved) {
+    dx = ax; dy = ay; dz = az;
+  } else {
+    gravX = GRAVITY_ALPHA * gravX + (1-GRAVITY_ALPHA) * ax;
+    gravY = GRAVITY_ALPHA * gravY + (1-GRAVITY_ALPHA) * ay;
+    gravZ = GRAVITY_ALPHA * gravZ + (1-GRAVITY_ALPHA) * az;
+    dx = ax - gravX; dy = ay - gravY; dz = az - gravZ;
+  }
+
+  document.getElementById('dx').textContent = dx.toFixed(2);
+  document.getElementById('dy').textContent = dy.toFixed(2);
+  document.getElementById('dz').textContent = dz.toFixed(2);
+
+  // Axis selection
+  axX.push(Math.abs(dx)); axY.push(Math.abs(dy)); axZ.push(Math.abs(dz));
+  if (axX.length > AXIS_WINDOW) { axX.shift(); axY.shift(); axZ.shift(); }
+  const vx = variance(axX), vy = variance(axY), vz = variance(axZ);
+  let signal, axisName;
+  if (vx >= vy && vx >= vz) { signal = dx; axisName = `X (var=${vx.toFixed(3)})`; }
+  else if (vy >= vx && vy >= vz) { signal = dy; axisName = `Y (var=${vy.toFixed(3)})`; }
+  else { signal = dz; axisName = `Z (var=${vz.toFixed(3)})`; }
+  document.getElementById('axis').textContent = axisName;
+
+  // Smooth
+  smoothBuf.push(signal);
+  if (smoothBuf.length > SMOOTH_WINDOW) smoothBuf.shift();
+  const mag = Math.abs(smoothBuf.reduce((a,b)=>a+b,0) / smoothBuf.length);
+  document.getElementById('smag').textContent = mag.toFixed(3);
+
+  // Peak detection
+  const peakEl = document.getElementById('peaked');
+  if (!peakArmed) {
+    if (mag >= PEAK_THRESHOLD) {
+      peakArmed = true;
+      peakEl.textContent = 'YES ▲';
+      peakEl.className = 'val yellow';
+      log(`Peak armed at mag=${mag.toFixed(3)}`);
+    }
+  } else {
+    if (mag < LOW_THRESHOLD) {
+      peakArmed = false;
+      peakEl.textContent = 'NO';
+      peakEl.className = 'val';
+      const elapsed = now - lastStepTime;
+      if (elapsed >= MIN_STEP_MS) {
+        stepCount++;
+        lastStepTime = now;
+        document.getElementById('steps').textContent = stepCount;
+        log(`✅ STEP #${stepCount} (gap=${elapsed}ms, mag=${mag.toFixed(3)})`);
+      } else {
+        log(`❌ Rejected: too fast (${elapsed}ms < ${MIN_STEP_MS}ms)`);
+      }
+    }
+  }
+}
+
+async function startSensor() {
+  running = true;
+  const statusEl = document.getElementById('status');
+
+  if (typeof DeviceMotionEvent === 'undefined') {
+    statusEl.textContent = '❌ DeviceMotionEvent not supported';
+    statusEl.className = 'val red';
+    log('DeviceMotionEvent undefined — browser not supported');
+    return;
+  }
+
+  try {
+    if (typeof DeviceMotionEvent.requestPermission === 'function') {
+      const p = await DeviceMotionEvent.requestPermission();
+      if (p !== 'granted') throw new Error('Permission denied');
+    }
+    window.addEventListener('devicemotion', handleMotion, { passive: true });
+    statusEl.textContent = '✅ Sensor active — chalo chalo!';
+    statusEl.className = 'val green';
+    log('Sensor started — waiting for motion events...');
+
+    // Check if events are actually firing
+    setTimeout(() => {
+      if (eventCount === 0 && running) {
+        statusEl.textContent = '⚠️ Sensor registered but NO events — check HTTPS/permissions';
+        statusEl.className = 'val yellow';
+        log('WARNING: 3s mein koi event nahi aaya!');
+      }
+    }, 3000);
+
+  } catch(err) {
+    statusEl.textContent = '❌ ' + err.message;
+    statusEl.className = 'val red';
+    log('Error: ' + err.message);
+  }
+}
+
+function stopSensor() {
+  running = false;
+  window.removeEventListener('devicemotion', handleMotion);
+  document.getElementById('status').textContent = 'Stopped';
+  log('Sensor stopped');
+}
+</script>
+</body>
+</html>
