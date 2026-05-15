@@ -36,14 +36,14 @@
 const Sensor = (() => {
 
   /* ── Tuning constants ── */
-  const PEAK_THRESHOLD  = 2.5;   // m/s² dynamic (gravity removed)
-  const LOW_THRESHOLD   = 0.8;   // m/s² — hysteresis floor
-  const MIN_STEP_MS     =200;   // ms  — fastest real step
+  const PEAK_THRESHOLD  = 5.0;   // m/s² — raised: touch/table vibration filter out
+  const LOW_THRESHOLD   = 2.0;   // m/s² — ~40% of peak
+  const MIN_STEP_MS     = 220;   // ms  — fastest real step
   const MAX_STEP_MS     = 2200;  // ms  — slowest real step
-  const SMOOTH_WINDOW   = 4;     // rolling average size
+  const SMOOTH_WINDOW   = 6;     // larger window = smoother, less noise
   const AXIS_WINDOW     = 20;    // samples for variance calc
-  const RHYTHM_CONFIRM  = 2;     // prior in-cadence steps needed
-  const GRAVITY_ALPHA   = 0.8;   // low-pass alpha for gravity tracking
+  const RHYTHM_CONFIRM  = 3;     // 3 consistent steps needed before counting
+  const GRAVITY_ALPHA   = 0.85;  // slightly stronger gravity tracking
 
   /* ── Mock constants ── */
   const MOCK_RATE_MS   = 560;
